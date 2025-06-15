@@ -40,7 +40,7 @@ def get_emotion(text):
         outputs = koBERT_model(**inputs)
     logits = outputs.logits
     # 가중치 조정을 통해 긍정적인 감정("Happy": index 2, "Tender": index 3) 강화
-    positive_biases = {2: 0.2, 3: 0.1}
+    positive_biases = {2: 0.1, 3: 0.1}
     for pos_idx, bias in positive_biases.items():
         logits[:, pos_idx] += bias
     idx = torch.argmax(logits, dim=1).item()
