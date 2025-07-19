@@ -1,4 +1,3 @@
-gpu가 딸려서 일단 본가 가서 마저 해야될듯
 
 # Conflict Score
 
