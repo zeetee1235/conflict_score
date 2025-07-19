@@ -1,0 +1,7 @@
+# 필수 패키지 목록
+transformers
+pytorch
+pandas
+python-dotenv
+dc_api
+logging
