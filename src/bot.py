@@ -6,13 +6,12 @@ from collections import Counter
 from utils import handle_exceptions, sanitize_text, clean_title
 
 class DcinsideBot:
-    def __init__(self, api_manager, db_managers, gpt_api_manager, persona, settings):
+    def __init__(self, api_manager, db_managers, persona, settings):
         """
         DcinsideBot 클래스를 초기화합니다.
 
         :param api_manager: DCInside API 관리 객체
         :param db_managers: 데이터베이스 관리 객체들
-        :param gpt_api_manager: GPT API 관리 객체
         :param persona: 봇의 페르소나
         :param settings: 봇 설정
         """
@@ -20,7 +19,7 @@ class DcinsideBot:
         self.crawling_db = db_managers['crawling']
         self.data_db = db_managers['data']
         self.memory_db = db_managers['memory']
-        self.gpt_api_manager = gpt_api_manager
+        
         self.persona = persona
         self.settings = settings
         self.write_article_enabled = settings.get('write_article_enabled', True)
@@ -81,62 +80,76 @@ class DcinsideBot:
 
     async def write_article(self, trending_topics, memory_data=None):
         if not self.write_article_enabled:
-            return None
+            logging.info("게시글 작성이 비활성화되어 있습니다.")
+            return
 
-        top_trending_topics = [topic[0] for topic in trending_topics.most_common(3)]
+        try:
+            prompt = self.create_article_prompt(trending_topics, memory_data)
 
-        prompt = f"""
-        {self.persona} 페르소나 규칙 꼭 지키기.
+            title, content = await self.gpt_api_manager.generate_text(prompt)
 
-        {self.board_id} 갤러리에 어울리는 흥미로운 글 제목과 내용을 한 번에 작성해줘.
-        최근 유행하는 토픽을 참고하여 제목과 글을 구성하고, 페르소나에 맞춰 작성해줘.
+            await self.api_manager.write_document(title, content)
 
-        최근 {self.board_id} 갤러리에서 유행하는 토픽은 다음과 같습니다:
-        {trending_topics}
+            logging.info(f"게시글 작성 완료: {title}")
+            await self.memory_db.save_data(self.board_id, "article", f"작성한 글: {title}")
 
-        특히 다음 토픽들을 중심으로 글 내용을 구성해줘:
-        {', '.join(top_trending_topics)}
+        except Exception as e:
+            logging.error(f"게시글 작성 중 오류 발생: {e}")
 
-        갤러리의 최근 정보를 참고하여 글 내용을 더욱 풍성하게 만들어줘:
-        {memory_data}
-        제목과 내용은 아래 형식으로 작성해줘:
-        제목: [제목 텍스트]
-        내용: [내용 텍스트]
+    @handle_exceptions
+    async def write_comment(self, doc_id, document_title):
         """
-        while True:
-            try:
-                content = await self.gpt_api_manager.generate_content(prompt)
-                
-                if not content:
-                    raise ValueError("생성된 콘텐츠가 비어있습니다.")
+        댓글을 작성합니다.
 
-                # 제목과 내용을 분리
-                title_match = re.search(r"제목:\s*(.*)", content)
-                content_match = re.search(r"내용:\s*(.*)", content)
+        :param doc_id: 문서 ID
+        :param document_title: 문서 제목
+        """
+        if not self.write_comment_enabled:
+            logging.info("댓글 작성이 비활성화되어 있습니다.")
+            return
 
-                if not title_match or not content_match:
-                    raise ValueError("제목 또는 내용을 찾을 수 없습니다.")
+        try:
+            prompt = self.create_comment_prompt(document_title)
+            _, comment_content = await self.gpt_api_manager.generate_text(prompt)
 
-                title = sanitize_text(title_match.group(1))
-                content = sanitize_text(content_match.group(1))
+            await self.api_manager.write_comment(doc_id, comment_content)
 
-                doc_id = await self.api_manager.write_document(
-                    title=title,
-                    content=content
-                )
+            logging.info(f"댓글 작성 완료: {comment_content} (글: {document_title})")
+            await self.memory_db.save_data(self.board_id, "comment", f"작성한 댓글: {comment_content} (글: {document_title})")
 
-                await self.data_db.save_data(
-                    content_type="article",
-                    doc_id=doc_id,
-                    content=title,
-                    board_id=self.board_id
-                )
+        except Exception as e:
+            logging.error(f"댓글 작성 중 오류 발생: {e}")
 
-                return doc_id, title
-            except Exception as e:
-                logging.error(f"글 작성 실패: {e}")
-                await asyncio.sleep(self.settings['article_interval'])
+    def create_article_prompt(self, trending_topics, memory_data):
+        """
+        게시글 작성을 위한 프롬프트를 생성합니다.
 
+        :param trending_topics: 트렌딩 토픽
+        :param memory_data: 메모리 데이터
+        :return: 생성된 프롬프트
+        """
+        return (
+            f"페르소나: {self.persona}\n\n"
+            f"최신 토픽: {trending_topics}\n\n"
+            f"메모리: {memory_data}\n\n"
+            "위 정보를 바탕으로 DCinside 게시글의 제목과 내용을 생성해줘. "
+            "응답은 '제목: [생성된 제목]\n내용: [생성된 내용]' 형식이어야 합니다."
+        )
+
+    def create_comment_prompt(self, document_title):
+        """
+        댓글 작성을 위한 프롬프트를 생성합니다.
+
+        :param document_title: 문서 제목
+        :return: 생성된 프롬프트
+        """
+        return (
+            f"페르소나: {self.persona}\n\n"
+            f"게시글 제목: {document_title}\n\n"
+            "위 게시글에 대한 댓글을 생성해줘. "
+            "응답은 '제목: [임의의 텍스트]\n내용: [생성된 댓글 내용]' 형식이어야 합니다."
+        )
+        
     async def write_comment(self, document_id, article_title):
         if not self.write_comment_enabled:
             return None

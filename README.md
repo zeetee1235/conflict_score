@@ -22,7 +22,6 @@ python src/main.py
 - src/config.py: 환경설정
 - src/database_manager.py: DB 관리
 - src/dc_api_manager.py: DC API 연동
-- src/gpt_api_manager.py: GPT 연동
 - src/utils.py: 유틸리티 함수
 
 ## 문의

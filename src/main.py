@@ -1,4 +1,6 @@
+import sys
 import os
+sys.path.insert(0, os.path.dirname(__file__))
 import time
 import csv
 import pandas as pd
@@ -10,54 +12,61 @@ import re
 import random
 import asyncio
 import logging
-import time
+
 from config import API_KEYS, MODEL_NAME, GENERATION_CONFIG, DEFAULT_BOT_SETTINGS
 from database_manager import DatabaseManager
 from bot import DcinsideBot
-from gpt_api_manager import GptApiManager
 from dc_api_manager import DcApiManager
 
+## 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# GPU 메모리 초기화
-if torch.cuda.is_available():
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
+def setup_device():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[INFO] Using device: {device}")
+    return device
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"[INFO] Using device: {device}")
+device = setup_device()
 
-# KoBERT 토크나이저와 모델 로드
-try:
-    koBERT_tokenizer = AutoTokenizer.from_pretrained("monologg/kobert", trust_remote_code=True)
-except ImportError as e:
-    print(f"[ERROR] Missing dependency: {e}")
-    print("Please install required packages:\n    pip install protobuf sentencepiece")
-    raise
-koBERT_model = AutoModelForSequenceClassification.from_pretrained("rkdaldus/ko-sent5-classification")
-koBERT_model.to(device)
-emotion_labels = {0:"Angry",1:"Fear",2:"Happy",3:"Tender",4:"Sad"}
+def load_kobert(device):
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("monologg/kobert", trust_remote_code=True)
+    except ImportError as e:
+        print(f"[ERROR] Missing dependency: {e}")
+        print("Please install required packages:\n    pip install protobuf sentencepiece")
+        raise
+    model = AutoModelForSequenceClassification.from_pretrained("rkdaldus/ko-sent5-classification")
+    model.to(device)
+    labels = {0:"Angry",1:"Fear",2:"Happy",3:"Tender",4:"Sad"}
+    return tokenizer, model, labels
 
-
-# Llama 3.2 Korean 모델 로드
-LLM_model_id = 'Bllossom/llama-3.2-Korean-Bllossom-3B'
-
-LLM_tokenizer = AutoTokenizer.from_pretrained(LLM_model_id)
-LLM_tokenizer.pad_token = LLM_tokenizer.eos_token
-LLM_model = AutoModelForCausalLM.from_pretrained(
-    LLM_model_id,
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-)
-LLM_model.config.pad_token_id = LLM_tokenizer.pad_token_id
+koBERT_tokenizer, koBERT_model, emotion_labels = load_kobert(device)
 
 
-def get_emotion(text):
+def load_llama():
+    model_id = 'Bllossom/llama-3.2-Korean-Bllossom-3B'
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+    )
+    model.config.pad_token_id = tokenizer.pad_token_id
+    return tokenizer, model
+
+LLM_tokenizer, LLM_model = load_llama()
+
+
+def get_emotion(text: str) -> str:
     inputs = koBERT_tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(device)
     with torch.no_grad():
         outputs = koBERT_model(**inputs)
     logits = outputs.logits
-    # 가중치 조정을 통해 긍정적인 감정("Happy": index 2, "Tender": index 3) 강화
+    # 긍정 감정 강화
     positive_biases = {2: 0.1, 3: 0.1}
     for pos_idx, bias in positive_biases.items():
         logits[:, pos_idx] += bias
@@ -65,7 +74,7 @@ def get_emotion(text):
     return emotion_labels[idx]
 
 
-def parse_emotion():
+def parse_emotion() -> None:
     base = os.path.dirname(__file__)
     contents_df = pd.read_csv(os.path.join(base, "resource/contents.csv"), encoding="utf8")
     replies_df  = pd.read_csv(os.path.join(base, "resource/reply.csv"),    encoding="utf8")
@@ -97,7 +106,7 @@ def parse_emotion():
         print(f"{emotion}: {count}")
         
         
-def separate_subjects():
+def separate_subjects() -> None:
     base = os.path.dirname(__file__)
     contents_df = pd.read_csv(os.path.join(base, "resource/contents.csv"), encoding="utf8")
     reply_df = pd.read_csv(os.path.join(base, "resource/reply.csv"), encoding="utf8")
@@ -194,7 +203,7 @@ def separate_subjects():
     print(f"[INFO] All batches processed. Unique subjects saved to {output_path}")
 
 
-def generate_post(user_prompt):
+def generate_post(user_prompt: str) -> None:
     base = os.path.dirname(__file__)
     emotions_path = os.path.join(base, "resource/emotions.csv")
     
@@ -297,7 +306,7 @@ def generate_post(user_prompt):
         print(raw)
     print("----------------\n")
 
-async def run_gallery_bot(api_key, bot_settings):
+async def run_gallery_bot(api_key: str, bot_settings: dict) -> None:
     """
     갤러리 봇을 실행합니다.
 
@@ -324,14 +333,15 @@ async def run_gallery_bot(api_key, bot_settings):
         # 데이터베이스 연결
         await asyncio.gather(*[db_manager.connect() for db_manager in db_managers.values()])
 
-        # GptApiManager 객체 생성 (ChatGPT 사용)
-        gpt_api_manager = GptApiManager(api_key=api_key)
+        # GptApiManager 객체 생성 (로컬 Llama 모델 사용)
+        # GptApiManager 객체 생성: 로컬 Llama 모델 사용
+        
 
         # DcinsideBot 객체 생성
         bot = DcinsideBot(
             api_manager=dc_api_manager,
             db_managers=db_managers,
-            gpt_api_manager=gpt_api_manager,
+            
             persona=bot_settings['persona'],
             settings=bot_settings
         )
@@ -371,31 +381,26 @@ async def run_gallery_bot(api_key, bot_settings):
         await dc_api_manager.close()  # 세션 명시적으로 종료
 
 async def main():
+    if not API_KEYS:
+        logging.error("API_KEYS가 .env 파일에 설정되지 않았습니다. 프로그램을 종료합니다.")
+        return
+
     current_api_key_index = 0
     yjrs_bot = DEFAULT_BOT_SETTINGS.copy()
     yjrs_bot.update({'board_id': 'yjrs'})
 
     while True:
         current_api_key = API_KEYS[current_api_key_index]
-        await run_gallery_bot(current_api_key, yjrs_bot)
+        try:
+            await run_gallery_bot(current_api_key, yjrs_bot)
+        except Exception as e:
+            logging.error(f"run_gallery_bot 오류: {e}")
         await asyncio.sleep(900)  # 15분 대기
         current_api_key_index = (current_api_key_index + 1) % len(API_KEYS)
 
-if __name__ == "__main__":
-    print("[INFO] 감정 분석을 시작합니다.")
-    #parse_emotion()
-    print("[INFO] 감정 분석이 완료되었습니다.")
-    time.sleep(1)  # 잠시 대기
-    print("[INFO] 주제 분리를 시작합니다.")
-    #separate_subjects()
-    print("[INFO] 주제 분리가 완료되었습니다.")
-
-    # Start interactive post generation loop
+def interactive_post_generation():
     print("\n[INFO] 지금부터 프롬프트를 입력하여 게시글 생성을 시작할 수 있습니다.")
     print("[INFO] 종료하려면 'exit' 또는 'quit'을 입력하세요.")
-    asyncio.run(main())
-    print("[INFO] 게시글 생성이 완료되었습니다. 프로그램을 종료합니다.")
-    
     while True:
         user_prompt = input("게시글 주제를 입력하세요 > ")
         if user_prompt.lower() in ['exit', 'quit']:
@@ -404,5 +409,21 @@ if __name__ == "__main__":
         if not user_prompt:
             continue
         generate_post(user_prompt)
+
+if __name__ == "__main__":
+    print("[INFO] 감정 분석을 시작합니다.")
+    parse_emotion()
+    print("[INFO] 감정 분석이 완료되었습니다.")
+    time.sleep(1)
+    print("[INFO] 주제 분리를 시작합니다.")
+    separate_subjects()
+    print("[INFO] 주제 분리가 완료되었습니다.")
+
+    # 비동기 봇 실행 (원한다면 주석 해제)
+    asyncio.run(main())
+
+    # 인터랙티브 게시글 생성 루프
+    interactive_post_generation()
+    print("[INFO] 게시글 생성이 완료되었습니다. 프로그램을 종료합니다.")
 
 

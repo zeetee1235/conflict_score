@@ -1,7 +1,7 @@
 # 필수 패키지 목록
 transformers
-pytorch
+torch
 pandas
 python-dotenv
 dc_api
-logging
+filetype
